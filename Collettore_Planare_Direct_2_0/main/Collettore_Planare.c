@@ -119,7 +119,8 @@ int32_t configured = 0;
 int motor_configured = 0;
 int global_number_modules = 0;
 
-static const char *TAG = "Collettore_Planare";
+static const char *TAG = "Collettore_Planare_2.0";
+float versione = 2.0;
 esp_mqtt_client_handle_t client = NULL;
 static void main_routine();
 
@@ -135,7 +136,8 @@ static const char REQUEST[512] = "POST " WEB_URL " HTTP/1.0\r\n"
 //static int averageONValues [12] = {16,16,16,16,16,16,16,16,16,16,16,16};
 //static int averageOFFValues [12] = {16,16,16,16,16,16,16,16,16,16,16,16};
 static int64_t initialTime = 0;
-static int max_time = 240;
+static int max_time = 120;
+static int max_time_closing = 240;
 static int32_t ValveStates [12] = {0,0,0,0,0,0,0,0,0,0,0,0};
 static int average_time_opening[12] = {350,350,350,350,350,350,350,350,350,350,350,350};
 static int average_time_closing[12] = {350,350,350,350,350,350,350,350,350,350,350,350};
@@ -257,7 +259,8 @@ static int64_t timerSetting_ON(int motor_n, int value){
         count_times++;
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    while(alarm < 3 && count_times < max_time);
+    //while(alarm < 3 && count_times < max_time);
+    while(count_times < max_time);
     return count_times;
 }
 
@@ -314,13 +317,13 @@ static int64_t timerSetting_OFF(void){
             alarm++;
             printf("ALARM DETECTED: %i\n",alarm);
         }
-        if(count_times > 4){
+        if(count_times > 110){
             media = (values[0] + values[1] + values[2] + values[3] + values[4]) / 5;
         }
         count_times++;
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    while(alarm < 3 && count_times < max_time);
+    while(alarm < 6 && count_times < max_time_closing);
     
     return count_times;
 }
@@ -377,13 +380,13 @@ static void readValue_off(int motor_n){ //void
             alarm++;
             printf("ALARM DETECTED: %i\n",alarm);
         }
-        if(count_times > 4){
+        if(count_times > 110){
             media = (values[0] + values[1] + values[2] + values[3] + values[4]) / 5;
         }
         count_times++;
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    while(alarm < 3 && count_times < max_time);
+    while(alarm < 6 && count_times < max_time_closing);
 }
 
 static void readValue_on(int motor_n, int value){ //void
@@ -447,7 +450,8 @@ static void readValue_on(int motor_n, int value){ //void
         count_times++;
         vTaskDelay(pdMS_TO_TICKS(50));
     }
-    while(alarm < 3 && count_times < closing_time && count_times < max_close_time);
+    //while(alarm < 3 && count_times < closing_time && count_times < max_close_time);
+    while(count_times < max_close_time);
 }
 
 
@@ -836,9 +840,9 @@ void settingMotors_1(){
     int tmp_time = 0;
     for(int i = 0; i < 12; i++){
         
-        printf("Opening Valve %i at startup\n",i);
-        printf("Result At Startup: %i\n",OpeningValve(i,true,100));
-        vTaskDelay(pdMS_TO_TICKS(100));
+        //printf("Opening Valve %i at startup\n",i);
+        //printf("Result At Startup: %i\n",OpeningValve(i,true,100));
+        //vTaskDelay(pdMS_TO_TICKS(100));
 
         //ClosingValve(i,true);
         //vTaskDelay(pdMS_TO_TICKS(100));
@@ -1296,7 +1300,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\",\"versione\":%.1f, \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\"}", MAC2STR(sta_mac), versione, 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11]);
             /*
             if(MQTT_CONNEECTED){
                 esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1902,7 +1906,7 @@ static void node_write_task(void *arg)
     
     for (;;) {
         
-        size = asprintf(&data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11]);
+        size = asprintf(&data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"versione\":%.1f, \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\"}", MAC2STR(sta_mac), versione, 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11]);
 
         if(MQTT_CONNEECTED){
                 esp_mqtt_client_publish(client, "mesh/toCloud", data, 0, 0, 0);
@@ -2024,10 +2028,11 @@ void main_routine(){
     */
     	//gpio_set_level(GPIO_ENABLE, 1);
     	//settingMotors_1();
-	if(motor_configured == 0){
-		settingMotors_1();
-	}
-    
+    //Eseguo il controllo dei tempi di apertura e chiusura, aprendo sempre le valvole in caso di riavvio
+	//if(motor_configured == 0){
+	//	settingMotors_1();
+	//}
+    settingMotors_1();
     
 
     esp_wifi_disconnect();
@@ -2159,18 +2164,18 @@ void app_main()
     printf("Reading boot start script from NVS ... ");
     int32_t boot_start = 0; // value will default to 0, if not set yet in NVS
     int32_t motor = 0;
-    int32_t valveEEPROM1 = 0;
-    int32_t valveEEPROM2 = 0;
-    int32_t valveEEPROM3 = 0;
-    int32_t valveEEPROM4 = 0;
-    int32_t valveEEPROM5 = 0;
-    int32_t valveEEPROM6 = 0;
-    int32_t valveEEPROM7 = 0;
-    int32_t valveEEPROM8 = 0;
-    int32_t valveEEPROM9 = 0;
-    int32_t valveEEPROM10 = 0;
-    int32_t valveEEPROM11 = 0;
-    int32_t valveEEPROM12 = 0;
+    int32_t valveEEPROM1 = 100;
+    int32_t valveEEPROM2 = 100;
+    int32_t valveEEPROM3 = 100;
+    int32_t valveEEPROM4 = 100;
+    int32_t valveEEPROM5 = 100;
+    int32_t valveEEPROM6 = 100;
+    int32_t valveEEPROM7 = 100;
+    int32_t valveEEPROM8 = 100;
+    int32_t valveEEPROM9 = 100;
+    int32_t valveEEPROM10 = 100;
+    int32_t valveEEPROM11 = 100;
+    int32_t valveEEPROM12 = 100;
     int opening1 = 0;
     int opening2 = 0;
     int opening3 = 0;
