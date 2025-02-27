@@ -53,12 +53,16 @@
 #include <stdint.h>
 #include <stddef.h>
 //#include "protocol_examples_common.h"
-#include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "mqtt_client.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_sleep.h"
+
+#define ESP_INTR_FLAG_DEFAULT 0
+
+SemaphoreHandle_t xSemaphore = NULL;
+bool led_status = false;
 
 extern const char server_cert_pem_start[] asm("_binary_cert_pem_start");
 extern const char server_cert_pem_end[] asm("_binary_cert_pem_end");
@@ -78,6 +82,7 @@ extern const char server_cert_pem_end[] asm("_binary_cert_pem_end");
 #define WIFI_FAIL_BIT      BIT1
 
 //definizione motori
+/*
 #define VALVOLA1 13
 #define VALVOLA2 14
 #define VALVOLA3 27
@@ -85,17 +90,39 @@ extern const char server_cert_pem_end[] asm("_binary_cert_pem_end");
 #define VALVOLA5 25
 #define VALVOLA6 33
 #define VALVOLA7 32
-#define VALVOLA8 4
-#define VALVOLA9 16
-#define VALVOLA10 17
-#define VALVOLA11 18
-#define VALVOLA12 19
-#define VALVOLA13 21
-#define VALVOLA14 22
-#define VALVOLA15 23
+#define VALVOLA8 23
+#define VALVOLA9 22
+#define VALVOLA10 21
+#define VALVOLA11 19
+#define VALVOLA12 18
+#define VALVOLA13 17
+#define VALVOLA14 16
+#define VALVOLA15 4
+*/
+#define VALVOLA1 15
+#define VALVOLA2 32
+#define VALVOLA3 33
+#define VALVOLA4 25
+#define VALVOLA5 26
+#define VALVOLA6 27
+#define VALVOLA7 14
+#define VALVOLA8 13
 
-#define SYNC 36
-#define INPUT 39
+#define VALVOLA9 23
+#define VALVOLA10 22
+#define VALVOLA11 21
+#define VALVOLA12 19
+#define VALVOLA13 18
+#define VALVOLA14 17
+#define VALVOLA15 16
+#define VALVOLA16 4
+//#define RELE_CALDAIA 4 
+
+#define SYNC 39
+#define CONS 36
+
+int stato_caldaia_ram = 0;
+int contatore_impulsi = 0;
 
 uint32_t MQTT_CONNEECTED = 0;
 
@@ -123,7 +150,21 @@ static int64_t initialTime = 0;
 static int32_t ValveStates [20] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 static int32_t TempValveStates[20] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
-static unsigned int OpeningValve(int motor_n, int value){
+
+void IRAM_ATTR sync_isr_handler(void* arg) {
+    
+    xSemaphoreGiveFromISR(xSemaphore, NULL);
+}
+
+static int checkValveStates(void){
+    int tmpResult = 0;
+    for(int i = 0; i < 20; i++){
+        tmpResult = ValveStates[i] + tmpResult;
+    }
+    return tmpResult;
+}
+
+static unsigned int OpeningValve(int motor_n, int value, bool boot){
     unsigned int result = 0;
     int32_t valveStateEEPROM;
     esp_err_t err;
@@ -178,7 +219,7 @@ static unsigned int OpeningValve(int motor_n, int value){
         
         switch(motor_n){
             case 0: printf("Setting the value of valve 1 to: %i\n",value);
-                    gpio_set_level(VALVOLA1, 0);
+                    gpio_set_level(VALVOLA1, 100);
                     err = nvs_set_i32(my_handle,"valveState1",value);
                     ValveStates[0] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -187,7 +228,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 1: printf("Setting the valueof valve 2 to: %i\n",value);
-                    gpio_set_level(VALVOLA2, 0);
+                    gpio_set_level(VALVOLA2, 100);
                     err = nvs_set_i32(my_handle,"valveState2",value);
                     ValveStates[1] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -196,7 +237,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 2: printf("Setting the value of valve 3 to: %i\n",value);
-                    gpio_set_level(VALVOLA3, 0);
+                    gpio_set_level(VALVOLA3, 100);
                     err = nvs_set_i32(my_handle,"valveState3",value);
                     ValveStates[2] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -205,7 +246,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 3: printf("Setting the valueof valve 4 to: %i\n",value);
-                    gpio_set_level(VALVOLA4, 0);
+                    gpio_set_level(VALVOLA4, 100);
                     err = nvs_set_i32(my_handle,"valveState4",value);
                     ValveStates[3] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -214,7 +255,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 4: printf("Setting the value of valve 5 to: %i\n",value);
-                    gpio_set_level(VALVOLA5, 0);
+                    gpio_set_level(VALVOLA5, 100);
                     err = nvs_set_i32(my_handle,"valveState5",value);
                     ValveStates[4] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -223,7 +264,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 5: printf("Setting the valueof valve 6 to: %i\n",value);
-                    gpio_set_level(VALVOLA6, 0);
+                    gpio_set_level(VALVOLA6, 100);
                     err = nvs_set_i32(my_handle,"valveState6",value);
                     ValveStates[5] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -232,7 +273,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 6: printf("Setting the value of valve 7 to: %i\n",value);
-                    gpio_set_level(VALVOLA7, 0);
+                    gpio_set_level(VALVOLA7, 100);
                     err = nvs_set_i32(my_handle,"valveState7",value);
                     ValveStates[6] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -241,7 +282,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 7: printf("Setting the valueof valve 8 to: %i\n",value);
-                    gpio_set_level(VALVOLA8, 0);
+                    gpio_set_level(VALVOLA8, 100);
                     err = nvs_set_i32(my_handle,"valveState8",value);
                     ValveStates[7] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -250,7 +291,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 8: printf("Setting the value of valve 9 to: %i\n",value);
-                    gpio_set_level(VALVOLA9, 0);
+                    gpio_set_level(VALVOLA9, 100);
                     err = nvs_set_i32(my_handle,"valveState9",value);
                     ValveStates[8] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -259,7 +300,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 9: printf("Setting the valueof valve 10 to: %i\n",value);
-                    gpio_set_level(VALVOLA10, 0);
+                    gpio_set_level(VALVOLA10, 100);
                     err = nvs_set_i32(my_handle,"valveState10",value);
                     ValveStates[9] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -268,7 +309,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;  
             case 10: printf("Setting the value of valve 11 to: %i\n",value);
-                    gpio_set_level(VALVOLA11, 0);
+                    gpio_set_level(VALVOLA11, 100);
                     err = nvs_set_i32(my_handle,"valveState11",value);
                     ValveStates[10] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -277,7 +318,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 11: printf("Setting the valueof valve 12 to: %i\n",value);
-                    gpio_set_level(VALVOLA12, 0);
+                    gpio_set_level(VALVOLA12, 100);
                     err = nvs_set_i32(my_handle,"valveState12",value);
                     ValveStates[11] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -286,7 +327,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break; 
             case 12: printf("Setting the valueof valve 13 to: %i\n",value);
-                    gpio_set_level(VALVOLA13, 0);
+                    gpio_set_level(VALVOLA13, 100);
                     err = nvs_set_i32(my_handle,"valveState13",value);
                     ValveStates[12] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -295,7 +336,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break; 
             case 13: printf("Setting the valueof valve 14 to: %i\n",value);
-                    gpio_set_level(VALVOLA14, 0);
+                    gpio_set_level(VALVOLA14, 100);
                     err = nvs_set_i32(my_handle,"valveState14",value);
                     ValveStates[13] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -304,7 +345,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;   
             case 14: printf("Setting the valueof valve 15 to: %i\n",value);
-                    gpio_set_level(VALVOLA15, 0);
+                    gpio_set_level(VALVOLA15, 100);
                     err = nvs_set_i32(my_handle,"valveState15",value);
                     ValveStates[14] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -313,7 +354,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;      
             case 15: printf("Setting the valueof valve 16 to: %i\n",value);
-                    //gpio_set_level(VALVOLA16, 0);
+                    gpio_set_level(VALVOLA16, 100);
                     err = nvs_set_i32(my_handle,"valveState16",value);
                     ValveStates[15] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -322,7 +363,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 16: printf("Setting the valueof valve 17 to: %i\n",value);
-                    //gpio_set_level(VALVOLA17, 0);
+                    //gpio_set_level(VALVOLA17, 100);
                     err = nvs_set_i32(my_handle,"valveState17",value);
                     ValveStates[16] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -331,7 +372,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 17: printf("Setting the valueof valve 18 to: %i\n",value);
-                    //gpio_set_level(VALVOLA18, 0);
+                    //gpio_set_level(VALVOLA18, 100);
                     err = nvs_set_i32(my_handle,"valveState18",value);
                     ValveStates[17] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -340,7 +381,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 18: printf("Setting the valueof valve 19 to: %i\n",value);
-                    //gpio_set_level(VALVOLA19, 0);
+                    //gpio_set_level(VALVOLA19, 100);
                     err = nvs_set_i32(my_handle,"valveState19",value);
                     ValveStates[18] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -349,7 +390,7 @@ static unsigned int OpeningValve(int motor_n, int value){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 19: printf("Setting the valueof valve 20 to: %i\n",value);
-                    //gpio_set_level(VALVOLA20, 0);
+                    //gpio_set_level(VALVOLA20, 100);
                     err = nvs_set_i32(my_handle,"valveState20",value);
                     ValveStates[19] = value;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -359,8 +400,15 @@ static unsigned int OpeningValve(int motor_n, int value){
                     break;
             default:break;
         } 
-     
     }
+    /*
+    if (checkValveStates() != 0 && stato_caldaia_ram == 0 && boot == false){
+        gpio_set_level(RELE_CALDAIA, 100);
+    }
+    if(gpio_get_level(CONS) == 0){ 
+        stato_caldaia_ram = 100;
+    }
+    */
     nvs_close(my_handle);
     return result;
 }
@@ -421,7 +469,7 @@ static unsigned int ClosingValve(int motor_n){
 
         switch(motor_n){
             case 0: printf("Setting the value of valve 1 to 0\n");
-                    gpio_set_level(VALVOLA1, 100);
+                    gpio_set_level(VALVOLA1, 0);
                     err = nvs_set_i32(my_handle,"valveState1",0);
                     ValveStates[0] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -430,7 +478,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 1: printf("Setting the valueof valve 2 to 0\n");
-                    gpio_set_level(VALVOLA2, 100);
+                    gpio_set_level(VALVOLA2, 0);
                     err = nvs_set_i32(my_handle,"valveState2",0);
                     ValveStates[1] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -440,7 +488,7 @@ static unsigned int ClosingValve(int motor_n){
                     break;
             
             case 2: printf("Setting the value of valve 3 to 0\n");
-                    gpio_set_level(VALVOLA3, 100);
+                    gpio_set_level(VALVOLA3, 0);
                     err = nvs_set_i32(my_handle,"valveState3",0);
                     ValveStates[2] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -449,7 +497,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 3: printf("Setting the valueof valve 4 to 0\n");
-                    gpio_set_level(VALVOLA4, 100);
+                    gpio_set_level(VALVOLA4, 0);
                     err = nvs_set_i32(my_handle,"valveState4",0);
                     ValveStates[3] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -458,7 +506,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 4: printf("Setting the value of valve 5 to 0\n");
-                    gpio_set_level(VALVOLA5, 100);
+                    gpio_set_level(VALVOLA5, 0);
                     err = nvs_set_i32(my_handle,"valveState5",0);
                     ValveStates[4] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -467,7 +515,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 5: printf("Setting the valueof valve 6 to 0\n");
-                    gpio_set_level(VALVOLA6, 100);
+                    gpio_set_level(VALVOLA6, 0);
                     err = nvs_set_i32(my_handle,"valveState6",0);
                     ValveStates[5] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -476,7 +524,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 6: printf("Setting the value of valve 7 to 0\n");
-                    gpio_set_level(VALVOLA7, 100);
+                    gpio_set_level(VALVOLA7, 0);
                     err = nvs_set_i32(my_handle,"valveState7",0);
                     ValveStates[6] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -485,7 +533,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 7: printf("Setting the valueof valve 8 to 0\n");
-                    gpio_set_level(VALVOLA8, 100);
+                    gpio_set_level(VALVOLA8, 0);
                     err = nvs_set_i32(my_handle,"valveState8",0);
                     ValveStates[7] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -494,7 +542,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 8: printf("Setting the value of valve 9 to 0\n");
-                    gpio_set_level(VALVOLA9, 100);
+                    gpio_set_level(VALVOLA9, 0);
                     err = nvs_set_i32(my_handle,"valveState9",0);
                     ValveStates[8] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -503,7 +551,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 9: printf("Setting the valueof valve 10 to 0\n");
-                    gpio_set_level(VALVOLA10, 100);
+                    gpio_set_level(VALVOLA10, 0);
                     err = nvs_set_i32(my_handle,"valveState10",0);
                     ValveStates[9] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -512,7 +560,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;  
             case 10: printf("Setting the value of valve 11 to 0\n");
-                    gpio_set_level(VALVOLA11, 100);
+                    gpio_set_level(VALVOLA11, 0);
                     err = nvs_set_i32(my_handle,"valveState11",0);
                     ValveStates[10] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -521,7 +569,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 11: printf("Setting the valueof valve 12 to 0\n");
-                    gpio_set_level(VALVOLA12, 100);
+                    gpio_set_level(VALVOLA12, 0);
                     err = nvs_set_i32(my_handle,"valveState12",0);
                     ValveStates[11] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -530,7 +578,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;       
             case 12: printf("Setting the value of valve 13 to 0\n");
-                    gpio_set_level(VALVOLA13, 100);
+                    gpio_set_level(VALVOLA13, 0);
                     err = nvs_set_i32(my_handle,"valveState13",0);
                     ValveStates[12] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -539,7 +587,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 13: printf("Setting the valueof valve 14 to 0\n");
-                    gpio_set_level(VALVOLA14, 100);
+                    gpio_set_level(VALVOLA14, 0);
                     err = nvs_set_i32(my_handle,"valveState14",0);
                     ValveStates[13] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -548,7 +596,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 14: printf("Setting the value of valve 15 to 0\n");
-                    gpio_set_level(VALVOLA15, 100);
+                    gpio_set_level(VALVOLA15, 0);
                     err = nvs_set_i32(my_handle,"valveState15",0);
                     ValveStates[14] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -557,6 +605,7 @@ static unsigned int ClosingValve(int motor_n){
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n"); 
                     break;
             case 15: printf("Setting the valueof valve 16 to 0\n");
+                    gpio_set_level(VALVOLA16, 0);
                     err = nvs_set_i32(my_handle,"valveState16",0);
                     ValveStates[15] = 0;
                     printf((err != ESP_OK) ? "Failed!\n" : "Done\n");
@@ -599,6 +648,14 @@ static unsigned int ClosingValve(int motor_n){
             
             default:break;
         } 
+        /*
+        if (checkValveStates() == 0 && stato_caldaia_ram == 100){
+            gpio_set_level(RELE_CALDAIA, 0);
+        }
+        if(gpio_get_level(CONS) == 1){ 
+            stato_caldaia_ram = 0;
+        }
+        */
     }
     nvs_close(my_handle);
     return result;
@@ -818,7 +875,9 @@ static void OTAUpdate(char *filePath, char *md5){
         printf("MD5 Confirmed\n");
         esp_http_client_config_t ota_client_config = {
             //.url = filePath,
-            .url = "http://192.168.5.1:9001/api/firmware/MKC_TRIAC",
+            //.url = "http://192.168.5.1:9001/api/firmware/MKC_TRIAC",
+            .url = "http://192.168.1.249:9001/api/firmware/MKC_TRIAC", //Gasperini, Cocchi, Schirò
+            //.url = "http://192.168.1.19:9001/api/firmware/MKC_TRIAC", //Degl'Innocenti Casa
             .skip_cert_common_name_check=true,
             .transport_type=HTTP_TRANSPORT_OVER_SSL,
             .cert_pem = server_cert_pem_start
@@ -857,7 +916,7 @@ static void node_read (int channel, float value){
                     printf("OPENING VALVE\n");
                     ClosingValve(0); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(0,value_h);
+                    OpeningValve(0,value_h, false);
                 }
             }else if(value_h == 0){
                 printf("CLOSING VALVE\n");
@@ -865,7 +924,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
             /*
             if(MQTT_CONNEECTED){
                 esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -882,7 +941,7 @@ static void node_read (int channel, float value){
                     printf("OPENING VALVE\n");
                     ClosingValve(1); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(1, value_h);
+                    OpeningValve(1, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -890,7 +949,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-			size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+			size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
                 esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -907,7 +966,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(2); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(2, value_h);
+                    OpeningValve(2, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -915,7 +974,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -932,7 +991,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(3); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(3, value_h);
+                    OpeningValve(3, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -940,7 +999,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -957,7 +1016,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(4); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(4, value_h);
+                    OpeningValve(4, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -965,7 +1024,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -982,7 +1041,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(5); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(5, value_h);
+                    OpeningValve(5, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -990,7 +1049,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1007,7 +1066,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(6); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(6, value_h);
+                    OpeningValve(6, value_h, false);
                 }
             }else if(value_h == 0){
                 printf("CLOSING VALVE\n");
@@ -1015,7 +1074,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1032,7 +1091,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(7); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(7, value_h);
+                    OpeningValve(7, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1040,7 +1099,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1057,7 +1116,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(8); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(8, value_h);
+                    OpeningValve(8, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1065,7 +1124,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1082,7 +1141,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(9); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(9, value_h);
+                    OpeningValve(9, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1090,7 +1149,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1107,7 +1166,7 @@ static void node_read (int channel, float value){
                 	printf("OPENING VALVE\n");
                     ClosingValve(10); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(10, value_h);
+                    OpeningValve(10, value_h, false);
                  }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1115,7 +1174,7 @@ static void node_read (int channel, float value){
             }
                         
             //sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1132,7 +1191,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(11); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(11, value_h);
+                    OpeningValve(11, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1140,7 +1199,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1157,7 +1216,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(12); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(12, value_h);
+                    OpeningValve(12, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1165,7 +1224,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1182,7 +1241,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(13); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(13, value_h);
+                    OpeningValve(13, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1190,7 +1249,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1207,7 +1266,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(14); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(14, value_h);
+                    OpeningValve(14, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1215,7 +1274,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1232,7 +1291,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(15); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(15, value_h);
+                    OpeningValve(15, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1240,7 +1299,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1257,7 +1316,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(16); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(16, value_h);
+                    OpeningValve(16, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1265,7 +1324,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1282,7 +1341,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(17); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(17, value_h);
+                    OpeningValve(17, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1290,7 +1349,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1307,7 +1366,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(18); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(18, value_h);
+                    OpeningValve(18, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1315,7 +1374,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1332,7 +1391,7 @@ static void node_read (int channel, float value){
 					printf("OPENING VALVE\n");
                     ClosingValve(19); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(19, value_h);
+                    OpeningValve(19, value_h, false);
                 }
             }else if(value_h == 0){
             	printf("CLOSING VALVE\n");
@@ -1340,7 +1399,7 @@ static void node_read (int channel, float value){
             }
                         
 			//sprintf(valveState, "%d", ValveState);
-            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+            size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d,\"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			/*
             if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
@@ -1351,7 +1410,7 @@ static void node_read (int channel, float value){
 		break;
 
 		case 21:
-        	size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+        	size_data = asprintf(&sending_data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 			if(MQTT_CONNEECTED){
             	esp_mqtt_client_publish(client, "mesh/toCloud", sending_data, 0, 0, 0);
             	ESP_LOGI(TAG,"Node send, size: %d, data: %s", size_data, sending_data);
@@ -1531,8 +1590,9 @@ static void mqtt_app_start(void)
 {
     ESP_LOGI(TAG, "STARTING MQTT");
     esp_mqtt_client_config_t mqttConfig = {
-        //.uri = "mqtt://192.168.1.6:1883"
-        .uri = MQTT_URL
+        .uri = "mqtt://192.168.1.249:1883" // Gasperini, Cocchi, Schirò
+        //.uri = "mqtt://192.168.1.19:1883" // Degl'Innocenti casa
+        //.uri = MQTT_URL
     };
     
     client = esp_mqtt_client_init(&mqttConfig);
@@ -1661,8 +1721,14 @@ static void node_write_task(void *arg)
     esp_wifi_get_mac(ESP_IF_WIFI_STA, sta_mac);
     
     for (;;) {
+        //ESP_LOGI(TAG, "GPIO LEVEL: %d\n",gpio_get_level(CONS));
+        if(gpio_get_level(CONS) == 0){ 
+            stato_caldaia_ram = 0;
+        } else{
+            stato_caldaia_ram = 100;
+        }
         
-        size = asprintf(&data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
+        size = asprintf(&data,"{\"mac\": \"%02x:%02x:%02x:%02x:%02x:%02x\", \"channel\": %d, \"valve_n\": %d, \"status\": %d,\"VALVE_1\":\"%d\",\"VALVE_2\":\"%d\",\"VALVE_3\":\"%d\",\"VALVE_4\":\"%d\",\"VALVE_5\":\"%d\",\"VALVE_6\":\"%d\",\"VALVE_7\":\"%d\",\"VALVE_8\":\"%d\",\"VALVE_9\":\"%d\",\"VALVE_10\":\"%d\",\"VALVE_11\":\"%d\",\"VALVE_12\":\"%d\",\"VALVE_13\":\"%d\",\"VALVE_14\":\"%d\",\"VALVE_15\":\"%d\",\"VALVE_16\":\"%d\",\"VALVE_17\":\"%d\",\"VALVE_18\":\"%d\",\"VALVE_19\":\"%d\",\"VALVE_20\":\"%d\"}", MAC2STR(sta_mac), 0, global_number_modules, stato_caldaia_ram, ValveStates[0], ValveStates[1], ValveStates[2],ValveStates[3],ValveStates[4],ValveStates[5],ValveStates[6],ValveStates[7],ValveStates[8],ValveStates[9],ValveStates[10],ValveStates[11],ValveStates[12],ValveStates[13],ValveStates[14],ValveStates[15],ValveStates[16],ValveStates[17],ValveStates[18],ValveStates[19]);
 
         if(MQTT_CONNEECTED){
                 esp_mqtt_client_publish(client, "mesh/toCloud", data, 0, 0, 0);
@@ -1674,15 +1740,36 @@ static void node_write_task(void *arg)
     vTaskDelete(NULL);
 }
 
+void sync_task(void* arg) {
+  for(;;) {
+    if(xSemaphoreTake(xSemaphore,portMAX_DELAY) == pdTRUE) {
+        if(contatore_impulsi == 100){
+            contatore_impulsi = 0;
+        } else{
+            contatore_impulsi++;
+        }
+        printf("Sync trigger! -> Check motor status\n");
+        ESP_LOGI(TAG, "Impulsi: %d", contatore_impulsi);
+    }
+  }
+}
+
+/*
 static void check_network(void *arg){
     for(;;){
         if(esp_timer_get_time() - initialTime >= 900000000){
-            printf("OPENING ALL VALVES\n");
+            printf("OPENING ALL VALVES AND TURN OFF THE BOILER\n");
+            if(stato_caldaia_ram == 100){
+                gpio_set_level(RELE_CALDAIA, 0);
+                if(gpio_get_level(CONS) == 1){ 
+                    stato_caldaia_ram = 0;
+                }
+            }
             for(int i = 0; i < 20; i++){
                 if(ValveStates[i]!=100){
                     ClosingValve(i); 
                     vTaskDelay(pdMS_TO_TICKS(200));
-                    OpeningValve(i,100);
+                    OpeningValve(i,100, true);
                     vTaskDelay(pdMS_TO_TICKS(500));
                 }
             }
@@ -1692,6 +1779,7 @@ static void check_network(void *arg){
     ESP_LOGI(TAG,"Check Network task is exit");
     vTaskDelete(NULL);
 }
+*/
 
 void main_routine(){
 
@@ -1762,15 +1850,21 @@ void main_routine(){
 
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = ESP_WIFI_SSID,
-            .password = ESP_WIFI_PASS
-            //.ssid = "ManzianaParadise",
-            //.password = "Manz_2023!"
+            //.ssid = ESP_WIFI_SSID, //Default
+            //.password = ESP_WIFI_PASS //Default
+            //.ssid = "MKT WiFi Network", //Gasperini
+            //.password = "MKTPassword" //Gasperini
+            //.ssid = "ES", //Degl'Innocenti casa
+            //.password = "lupetto era ilmiocane" //Degl'Innocenti casa
+            //.ssid = "TIM-29802241", //Cocchi
+            //.password = "FWHpoS35fNP7CnEnCO5Tw0ks" //Cocchi
+            .ssid = "TIM-42563755", //Schirò
+            .password = "ZKd4Nfb3sSbN3TfDy9XT4kFz" //Schirò
         },
     };
 
-    strcpy((char *)wifi_config.sta.ssid, value_2);
-    strcpy((char *)wifi_config.sta.password, value_3);
+    //strcpy((char *)wifi_config.sta.ssid, value_2); //Default
+    //strcpy((char *)wifi_config.sta.password, value_3); //Default
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
@@ -1788,20 +1882,49 @@ void main_routine(){
     initialTime = esp_timer_get_time();
     
     xTaskCreate(node_write_task, "node_write_task", 4 * 1024, NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
-    xTaskCreate(check_network, "check_network", 4 * 1024, NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
+    //xTaskCreate(check_network, "check_network", 4 * 1024, NULL, CONFIG_MDF_TASK_DEFAULT_PRIOTY, NULL);
 
-    //in caso di riavvio improvviso verifico le valvole che erano aperte ed in caso affermativo le apro.
+    //**************************** SYNC INITIALIZATION START*************************
+    /*
+    // start the task that will handle the sync trigger
+	xTaskCreate(sync_task, "sync_task", 2048, NULL, 10, NULL);
+	
+	// install ISR service with default configuration
+	gpio_install_isr_service(ESP_INTR_FLAG_DEFAULT);
+	
+	// attach the interrupt service routine
+	gpio_isr_handler_add(SYNC, sync_isr_handler, NULL);
+    */
+
+     //**************************** SYNC INITIALIZATION END*************************
+
+    //in caso di riavvio improvviso verifico le valvole che erano aperte ed in caso affermativo le chiudo.
+    
     for (int i = 0; i < 20; i++){
         if(ValveStates[i] != 0){
             int tmpValue = ValveStates[i];
             ClosingValve(i);
-            OpeningValve(i,tmpValue);
+            OpeningValve(i,tmpValue,true);
         }
     }
+    
+    //in caso di riavvio improvviso apro tutte le valvole ma non accendo la caldaia
+    /*
+    for (int i = 0; i < 20; i++){
+        ClosingValve(i);
+        OpeningValve(i,100, true);
+    }
+    gpio_set_level(RELE_CALDAIA, 0);
+    if(gpio_get_level(CONS) == 1){ 
+        stato_caldaia_ram = 0;
+    }
+    */
+    
 }
 
 void app_main()
 {	
+    xSemaphore = xSemaphoreCreateBinary();
 
     gpio_pad_select_gpio(VALVOLA1);
     gpio_pad_select_gpio(VALVOLA2);
@@ -1817,10 +1940,11 @@ void app_main()
     gpio_pad_select_gpio(VALVOLA12);
     gpio_pad_select_gpio(VALVOLA13);
     gpio_pad_select_gpio(VALVOLA14);
-    gpio_pad_select_gpio(VALVOLA15);
+
+    //gpio_pad_select_gpio(RELE_CALDAIA);
 
     gpio_pad_select_gpio(SYNC);
-    gpio_pad_select_gpio(INPUT);
+    gpio_pad_select_gpio(CONS);
     
     gpio_set_direction(VALVOLA1, GPIO_MODE_OUTPUT);
     gpio_set_direction(VALVOLA2, GPIO_MODE_OUTPUT);
@@ -1837,28 +1961,36 @@ void app_main()
     gpio_set_direction(VALVOLA13, GPIO_MODE_OUTPUT);
     gpio_set_direction(VALVOLA14, GPIO_MODE_OUTPUT);
     gpio_set_direction(VALVOLA15, GPIO_MODE_OUTPUT);
+    gpio_set_direction(VALVOLA16, GPIO_MODE_OUTPUT);
+
+    //gpio_set_direction(RELE_CALDAIA, GPIO_MODE_OUTPUT);
     
-    gpio_set_pull_mode(SYNC, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(SYNC, GPIO_PULLDOWN_ONLY);
     gpio_set_direction(SYNC, GPIO_MODE_INPUT);
+    //gpio_set_intr_type(SYNC, GPIO_INTR_NEGEDGE);
+    
 
-    gpio_set_pull_mode(INPUT, GPIO_PULLUP_ONLY);
-    gpio_set_direction(INPUT, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(CONS, GPIO_PULLUP_ONLY);
+    gpio_set_direction(CONS, GPIO_MODE_INPUT);
 
-    gpio_set_level(VALVOLA1, 100);
-    gpio_set_level(VALVOLA2, 100);
-    gpio_set_level(VALVOLA3, 100);
-    gpio_set_level(VALVOLA4, 100);
-    gpio_set_level(VALVOLA5, 100);
-    gpio_set_level(VALVOLA6, 100);
-    gpio_set_level(VALVOLA7, 100);
-    gpio_set_level(VALVOLA8, 100);
-    gpio_set_level(VALVOLA9, 100);
-    gpio_set_level(VALVOLA10, 100);
-    gpio_set_level(VALVOLA11, 100);
-    gpio_set_level(VALVOLA12, 100);
-    gpio_set_level(VALVOLA13, 100);
-    gpio_set_level(VALVOLA14, 100);
-    gpio_set_level(VALVOLA15, 100);
+    gpio_set_level(VALVOLA1, 0);
+    gpio_set_level(VALVOLA2, 0);
+    gpio_set_level(VALVOLA3, 0);
+    gpio_set_level(VALVOLA4, 0);
+    gpio_set_level(VALVOLA5, 0);
+    gpio_set_level(VALVOLA6, 0);
+    gpio_set_level(VALVOLA7, 0);
+    gpio_set_level(VALVOLA8, 0);
+    gpio_set_level(VALVOLA9, 0);
+    gpio_set_level(VALVOLA10, 0);
+    gpio_set_level(VALVOLA11, 0);
+    gpio_set_level(VALVOLA12, 0);
+    gpio_set_level(VALVOLA13, 0);
+    gpio_set_level(VALVOLA14, 0);
+    gpio_set_level(VALVOLA15, 0);
+    gpio_set_level(VALVOLA16, 0);
+
+    //gpio_set_level(RELE_CALDAIA, 0);
 
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
